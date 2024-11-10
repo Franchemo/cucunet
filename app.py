@@ -15,9 +15,6 @@ load_dotenv()
 # Set up OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Use the pre-trained assistant ID
-ASSISTANT_ID = "asst_8uJ0vuy8Py0fJWCvbcH5NuB9"
-
 # Define situation type mapping
 SITUATION_TYPES = {
     "学习相关（如图书馆使用、与教授沟通等）": "学习相关",
@@ -73,84 +70,76 @@ def get_anonymous_posts():
     conn.close()
     return posts
 
-def get_or_create_thread():
-    if "thread_id" not in st.session_state:
-        thread = client.beta.threads.create()
-        st.session_state.thread_id = thread.id
-    return st.session_state.thread_id
-
-def check_active_runs(thread_id):
-    """Check if there are any active runs for the thread"""
-    try:
-        runs = client.beta.threads.runs.list(thread_id=thread_id)
-        for run in runs.data:
-            if run.status in ['queued', 'in_progress', 'requires_action']:
-                return True
-        return False
-    except Exception:
-        return False
+def get_chat_messages(message_type):
+    """Get chat messages from session state"""
+    if message_type not in st.session_state:
+        st.session_state[message_type] = []
+    return st.session_state[message_type]
 
 def generate_response(prompt, query_type, context=None):
     try:
-        thread_id = get_or_create_thread()
+        messages = []
         
-        # Check for active runs
-        if check_active_runs(thread_id):
-            return "请稍等片刻，我正在处理您的上一个问题..."
-
-        # Enhance prompt based on query type and context
+        # Add system message based on query type
         if query_type == "cultural_advice":
-            full_prompt = f"作为文化顾问，请针对以下情况提供详细的建议和解释：{prompt}\n考虑用户背景：{context}"
+            system_message = """你是一位经验丰富的文化顾问，专门帮助国际学生适应新的文化环境。
+            你需要：
+            1. 提供具体、实用的建议
+            2. 解释文化差异背后的原因
+            3. 分享相关的文化习俗和礼仪
+            4. 给出实际的例子和情境
+            请基于用户的具体情况提供个性化的建议。"""
+            
+            # Add context to the conversation
+            if context:
+                messages.append({"role": "system", "content": system_message})
+                messages.append({"role": "user", "content": f"用户背景信息：{context}"})
+        
         elif query_type == "emotion_support":
             emotion_data = analyze_emotion(prompt)
-            full_prompt = f"考虑到用户情绪状态（情感极性：{emotion_data['polarity']}），请提供温和的支持和建议：{prompt}"
+            system_message = f"""你是一位富有同理心的心理支持顾问。
+            用户当前的情感状态显示情感极性为{emotion_data['polarity']}。
+            请：
+            1. 表达理解和认同
+            2. 提供情感支持
+            3. 给出实用的建议
+            4. 鼓励积极的态度
+            注意使用温和、支持性的语言。"""
+            messages.append({"role": "system", "content": system_message})
+        
         elif query_type == "anonymous_sharing":
-            full_prompt = f"对于这个匿名分享：{prompt}\n请提供理解和支持性的回应，同时考虑文化敏感性"
-        else:
-            full_prompt = prompt
+            system_message = """你是一位理解和支持的倾听者。
+            对于匿名分享：
+            1. 表示理解和同理
+            2. 分享类似经历（如果适用）
+            3. 提供建设性的建议
+            4. 鼓励继续分享
+            请保持文化敏感性。"""
+            messages.append({"role": "system", "content": system_message})
 
-        try:
-            # Add message to thread
-            client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=full_prompt
-            )
-        except Exception as e:
-            if "while a run" in str(e) and "is active" in str(e):
-                return "请稍等片刻，我正在处理您的上一个问题..."
-            raise e
+        # Add the user's prompt
+        messages.append({"role": "user", "content": prompt})
 
-        # Run assistant with the pre-trained assistant ID
-        run = client.beta.threads.runs.create(
-            thread_id=thread_id,
-            assistant_id=ASSISTANT_ID
+        # Get chat history
+        chat_history = get_chat_messages(f"{query_type}_messages")
+        
+        # Add recent chat history (last 5 exchanges) to maintain context
+        if chat_history:
+            recent_history = chat_history[-10:]  # Get last 5 exchanges (10 messages)
+            for msg in recent_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Generate response using chat completion
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1000
         )
 
-        # Wait for response
-        while True:
-            run_status = client.beta.threads.runs.retrieve(
-                thread_id=thread_id,
-                run_id=run.id
-            )
-            if run_status.status == 'completed':
-                break
-            elif run_status.status == 'failed':
-                return "对话生成失败，请重试。"
-            time.sleep(1)
-
-        # Get assistant's response
-        messages = client.beta.threads.messages.list(thread_id=thread_id)
-        assistant_message = next((m for m in messages if m.role == 'assistant'), None)
-        
-        if assistant_message:
-            return assistant_message.content[0].text.value
-        else:
-            return "助手没有提供回复。"
+        return response.choices[0].message.content
 
     except Exception as e:
-        if "while a run" in str(e) and "is active" in str(e):
-            return "请稍等片刻，我正在处理您的上一个问题..."
         return f"发生错误：{str(e)}"
 
 def display_messages(messages, container, message_type):
@@ -167,6 +156,15 @@ def display_messages(messages, container, message_type):
 
 def main():
     st.set_page_config(page_title="文化导航助手", layout="wide")
+
+    # Add custom CSS to align the button to the right
+    st.markdown("""
+        <style>
+        div.stButton > button {
+            float: right;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
     # Initialize session states for different message types
     if "cultural_messages" not in st.session_state:
@@ -227,7 +225,10 @@ def main():
                 value=st.session_state.emotional_state
             )
 
-            submitted = st.form_submit_button("保存基本信息")
+            # Create two columns for the submit button with a wider ratio
+            col1, col2 = st.columns([0.85, 0.15])
+            with col2:
+                submitted = st.form_submit_button("保存基本信息")
             
             if submitted:
                 st.session_state.current_status = current_status
@@ -260,15 +261,10 @@ def main():
             
             response = generate_response(user_input, "cultural_advice", context)
             
-            # Only append messages if it's not a waiting message
-            if not response.startswith("请稍等片刻"):
-                # Save to cultural messages history
-                st.session_state.cultural_messages.append({"role": "user", "content": user_input})
-                st.session_state.cultural_messages.append({"role": "assistant", "content": response})
-                st.experimental_rerun()
-            else:
-                # Show waiting message without adding to history
-                st.info(response)
+            # Save to cultural messages history
+            st.session_state.cultural_messages.append({"role": "user", "content": user_input})
+            st.session_state.cultural_messages.append({"role": "assistant", "content": response})
+            st.experimental_rerun()
 
     elif page == "情感支持":
         st.title("情感支持")
@@ -295,15 +291,10 @@ def main():
         if user_input:
             response = generate_response(user_input, "emotion_support")
             
-            # Only append messages if it's not a waiting message
-            if not response.startswith("请稍等片刻"):
-                # Save to emotional messages history
-                st.session_state.emotional_messages.append({"role": "user", "content": user_input})
-                st.session_state.emotional_messages.append({"role": "assistant", "content": response})
-                st.experimental_rerun()
-            else:
-                # Show waiting message without adding to history
-                st.info(response)
+            # Save to emotional messages history
+            st.session_state.emotional_messages.append({"role": "user", "content": user_input})
+            st.session_state.emotional_messages.append({"role": "assistant", "content": response})
+            st.experimental_rerun()
 
     elif page == "匿名树洞":
         st.title("匿名树洞")
@@ -340,10 +331,7 @@ def main():
                     st.write(post['content'])
                     if st.button("提供支持", key=post['id']):
                         response = generate_response(post['content'], "anonymous_sharing")
-                        if not response.startswith("请稍等片刻"):
-                            st.write("AI支持回应：", response)
-                        else:
-                            st.info(response)
+                        st.write("AI支持回应：", response)
 
     elif page == "历史记录":
         st.title("对话历史")
@@ -369,14 +357,10 @@ def main():
     # Clear chat buttons in sidebar
     if st.sidebar.button("清除文化咨询记录"):
         st.session_state.cultural_messages = []
-        if "thread_id" in st.session_state:
-            del st.session_state.thread_id
         st.experimental_rerun()
         
     if st.sidebar.button("清除情感支持记录"):
         st.session_state.emotional_messages = []
-        if "thread_id" in st.session_state:
-            del st.session_state.thread_id
         st.experimental_rerun()
 
 if __name__ == "__main__":
