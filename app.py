@@ -130,12 +130,13 @@ def generate_response(prompt, query_type, context=None):
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
         # Generate response using chat completion
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=1000
-        )
+        with st.spinner('正在认真倾听你的心事...'):
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1000
+            )
 
         return response.choices[0].message.content
 
@@ -259,9 +260,10 @@ def main():
             情绪状态：{st.session_state.emotional_state}
             """
             
+            # Generate response
             response = generate_response(user_input, "cultural_advice", context)
             
-            # Save to cultural messages history
+            # Save both messages after response is generated
             st.session_state.cultural_messages.append({"role": "user", "content": user_input})
             st.session_state.cultural_messages.append({"role": "assistant", "content": response})
             st.experimental_rerun()
@@ -289,9 +291,10 @@ def main():
         user_input = st.chat_input("分享您的感受...")
         
         if user_input:
+            # Generate response
             response = generate_response(user_input, "emotion_support")
             
-            # Save to emotional messages history
+            # Save both messages after response is generated
             st.session_state.emotional_messages.append({"role": "user", "content": user_input})
             st.session_state.emotional_messages.append({"role": "assistant", "content": response})
             st.experimental_rerun()
@@ -321,7 +324,8 @@ def main():
             )
             post_content = st.text_area("分享您的故事...")
             if st.button("发布"):
-                save_anonymous_post(post_content, post_category)
+                with st.spinner('正在发布中...'):
+                    save_anonymous_post(post_content, post_category)
                 st.success("发布成功！")
         
         with tab2:
