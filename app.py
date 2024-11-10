@@ -23,6 +23,23 @@ SITUATION_TYPES = {
     "其他": "其他"
 }
 
+# Optimized callback functions with batched updates
+def update_situation_state():
+    # Only update if there's a change in situation type
+    new_situation_type = SITUATION_TYPES[st.session_state.situation_input]
+    if new_situation_type != st.session_state.get('situation_type', ''):
+        st.session_state.situation_type = new_situation_type
+        # Reset other situation text when switching away from "其他"
+        if new_situation_type != "其他":
+            st.session_state.other_situation_text = ""
+            st.session_state.other_situation_enabled = False
+        else:
+            st.session_state.other_situation_enabled = True
+
+def update_other_situation():
+    if st.session_state.other_situation_text and st.session_state.situation_type == "其他":
+        st.session_state.situation_type = f"其他：{st.session_state.other_situation_text}"
+
 # Database setup
 def init_db():
     conn = sqlite3.connect('cultural_navigator.db')
@@ -77,6 +94,7 @@ def get_chat_messages(message_type):
     return st.session_state[message_type]
 
 def generate_response(prompt, query_type, context=None):
+    """Generate response using OpenAI API"""
     try:
         messages = []
         
@@ -130,13 +148,12 @@ def generate_response(prompt, query_type, context=None):
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
         # Generate response using chat completion
-        with st.spinner('正在认真倾听你的心事...'):
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=1000
-            )
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1000
+        )
 
         return response.choices[0].message.content
 
@@ -167,7 +184,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # Initialize session states for different message types
+    # Initialize session states
     if "cultural_messages" not in st.session_state:
         st.session_state.cultural_messages = []
     if "emotional_messages" not in st.session_state:
@@ -178,6 +195,10 @@ def main():
         st.session_state.situation_type = "学习相关"
     if "emotional_state" not in st.session_state:
         st.session_state.emotional_state = "一般"
+    if "other_situation_enabled" not in st.session_state:
+        st.session_state.other_situation_enabled = False
+    if "other_situation_text" not in st.session_state:
+        st.session_state.other_situation_text = ""
 
     # Sidebar for navigation
     st.sidebar.title("功能导航")
@@ -198,50 +219,44 @@ def main():
         请填写下面的信息，帮助我们更好地了解你的情况，提供更有针对性的建议。
         """)
 
-        # User information form
-        with st.form("user_info_form", clear_on_submit=False):
-            current_status = st.text_area(
-                "当前状态描述",
-                value=st.session_state.current_status,
-                placeholder="请简要描述你目前的情况，比如：刚来美国一个月，正在适应新的学习环境..."
-            )
-            
-            # 使用带示例的选项显示，但在后端使用简化的值
-            situation_type_display = st.selectbox(
+        # User information inputs with optimized updates
+        current_status = st.text_area(
+            "当前状态描述",
+            value=st.session_state.current_status,
+            placeholder="请简要描述你目前的情况，比如：刚来美国一个月，正在适应新的学习环境...",
+            key="status_input"
+        )
+        if current_status != st.session_state.current_status:
+            st.session_state.current_status = current_status
+        
+        # Create columns for situation type selection
+        col1, col2 = st.columns([0.7, 0.3])
+        
+        with col1:
+            st.selectbox(
                 "情景类型",
-                list(SITUATION_TYPES.keys())
+                list(SITUATION_TYPES.keys()),
+                key="situation_input",
+                on_change=update_situation_state
             )
-            
-            # 获取实际的情景类型值（不包含示例）
-            situation_type = SITUATION_TYPES[situation_type_display]
-            
-            # 如果选择"其他"，显示文本输入框
-            other_situation_text = ""
-            if situation_type == "其他":
-                other_situation_text = st.text_input("请描述您的具体情景：")
-            
-            emotional_state = st.select_slider(
-                "当前情绪状态",
-                options=["非常困扰", "有点焦虑", "一般", "还好", "很乐观"],
-                value=st.session_state.emotional_state
+        
+        with col2:
+            other_situation = st.text_input(
+                "其他情景",
+                value=st.session_state.other_situation_text,
+                placeholder="请描述您的具体情景",
+                disabled=not st.session_state.other_situation_enabled,
+                key="other_situation_text",
+                on_change=update_other_situation
             )
-
-            # Create two columns for the submit button with a wider ratio
-            col1, col2 = st.columns([0.85, 0.15])
-            with col2:
-                submitted = st.form_submit_button("保存基本信息")
-            
-            if submitted:
-                st.session_state.current_status = current_status
-                st.session_state.emotional_state = emotional_state
-                
-                # 处理情景类型
-                if situation_type == "其他" and other_situation_text:
-                    st.session_state.situation_type = f"其他：{other_situation_text}"
-                else:
-                    st.session_state.situation_type = situation_type
-                
-                st.success("基本信息已保存！")
+        
+        emotional_state = st.select_slider(
+            "当前情绪状态",
+            options=["非常困扰", "有点焦虑", "一般", "还好", "很乐观"],
+            value=st.session_state.emotional_state
+        )
+        if emotional_state != st.session_state.emotional_state:
+            st.session_state.emotional_state = emotional_state
 
         # Create a container for chat messages
         chat_container = st.container()
@@ -260,13 +275,14 @@ def main():
             情绪状态：{st.session_state.emotional_state}
             """
             
-            # Generate response
-            response = generate_response(user_input, "cultural_advice", context)
-            
-            # Save both messages after response is generated
-            st.session_state.cultural_messages.append({"role": "user", "content": user_input})
-            st.session_state.cultural_messages.append({"role": "assistant", "content": response})
-            st.experimental_rerun()
+            with st.spinner('正在认真倾听你的心事...'):
+                # Generate response
+                response = generate_response(user_input, "cultural_advice", context)
+                
+                # Save both messages after response is generated
+                st.session_state.cultural_messages.append({"role": "user", "content": user_input})
+                st.session_state.cultural_messages.append({"role": "assistant", "content": response})
+                st.experimental_rerun()
 
     elif page == "情感支持":
         st.title("情感支持")
@@ -291,13 +307,14 @@ def main():
         user_input = st.chat_input("分享您的感受...")
         
         if user_input:
-            # Generate response
-            response = generate_response(user_input, "emotion_support")
-            
-            # Save both messages after response is generated
-            st.session_state.emotional_messages.append({"role": "user", "content": user_input})
-            st.session_state.emotional_messages.append({"role": "assistant", "content": response})
-            st.experimental_rerun()
+            with st.spinner('正在认真倾听你的心事...'):
+                # Generate response
+                response = generate_response(user_input, "emotion_support")
+                
+                # Save both messages after response is generated
+                st.session_state.emotional_messages.append({"role": "user", "content": user_input})
+                st.session_state.emotional_messages.append({"role": "assistant", "content": response})
+                st.experimental_rerun()
 
     elif page == "匿名树洞":
         st.title("匿名树洞")
@@ -334,8 +351,9 @@ def main():
                 with st.expander(f"{post['category']} - {post['timestamp'][:16]}"):
                     st.write(post['content'])
                     if st.button("提供支持", key=post['id']):
-                        response = generate_response(post['content'], "anonymous_sharing")
-                        st.write("AI支持回应：", response)
+                        with st.spinner('正在生成回应...'):
+                            response = generate_response(post['content'], "anonymous_sharing")
+                            st.write("AI支持回应：", response)
 
     elif page == "历史记录":
         st.title("对话历史")
